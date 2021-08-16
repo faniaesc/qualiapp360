@@ -341,41 +341,42 @@ def getPSNRdata(I1, I2):
         return psnr
 
 def getMSSIMdata(I1, I2):
-    
+   
     K1 = 0.01
     K2 = 0.03
     L = 255                                  # Bitdepth of an image
     C1 = (K1*L)**2                           # Const value of C1
     C2 = (K2*L)**2                           # Const value of C2
-    
+  
     i1 = float32(I1)                         # cannot calculate on one byte large values
     i2 = float32(I2)
     i1_2 = i1 ** 2                           # I1^2
     i2_2 = i2 ** 2                           # I2^2
     i1_i2 = i1 * i2                          # I1 * I2
+    
+    mu_x = cv.GaussianBlur(i1, (11, 11), 1.5) #GaussianBlur(src, size of the kernel, sigmaX)
+    mu_y = cv.GaussianBlur(i2, (11, 11), 1.5)
+    mu_x_2 = mu_x * mu_x
+    mu_y_2 = mu_y * mu_y
+    mu_x_mu_y = mu_x * mu_y
 
-    mu_x = GaussianBlur(I1, (11, 11), 1.5)   #GaussianBlur(src, size of the kernel, sigmaX)
-    mu_y = GaussianBlur(I2, (11, 11), 1.5)
-    mu_x_2 = mu_x ** 2                       # muX ^2
-    mu_y_2 = mu_y ** 2                       # muY ^2
-    mu_xy = mu_x * mu_y
-
-    sigma_x_2 = GaussianBlur(i1_2, (11, 11), 1.5)
+    sigma_x_2 = cv.GaussianBlur(i1_2, (11, 11), 1.5)
     sigma_x_2 -= mu_x_2
-    sigma_y_2 = GaussianBlur(i2_2, (11, 11), 1.5)
+    sigma_y_2 = cv.GaussianBlur(i2_2, (11, 11), 1.5)
     sigma_y_2 -= mu_y_2
-    sigma_xy = GaussianBlur(i1_i2, (11, 11), 1.5)
-    sigma_xy -= mu_xy
+    sigma_x_y = cv.GaussianBlur(i1_i2, (11, 11), 1.5)
+    sigma_x_y -= mu_x_mu_y
 
-    #SSIM(x,y) steps
-    t1 = 2 * mu_xy + C1
-    t2 = 2 * sigma_x_2 + C2
-    t3 = t1 * t2                    # t3 = ((2*mu1_mu2 + C1).*(2*sigma12 + C2))
-    t1 = mu_x_2 + mu_y_2 + C1
-    t2 = sigma_x_2 + sigma_y_2 + C2
-    t1 = t1 * t2                    # t1 =((mu1_2 + mu2_2 + C1).*(sigma1_2 + sigma2_2 + C2))
-    ssim_map = cv.divide(t3, t1)    # ssim_map =  t3./t1;
-    mssim = cv.mean(ssim_map)                # average of ssim map
+    step1 = 2 * mu_x_mu_y + C1
+    step2 = 2 * sigma_x_y + C2
+    step3 = step1 * step2                    # t3 = ((2*mu_x_mu_y + C1).*(2*sigma_x2 + C2))
+    step4 = mu_x_2 + mu_y_2 + C1
+    step5 = sigma_x_2 + sigma_y_2 + C2
+    step6 = step4 * step5                    # t1 =((mu_x_2 + mu_y_2 + C1).*(sigma_x_2 + sigma_y_2 + C2))
+
+    ssim_map = cv.divide(step3, step6)    # ssim_map =  t3./t1;
+    mssim = cv.mean(ssim_map)       # mssim = average of ssim map
+
     return mssim
 
 if __name__=="__main__":
