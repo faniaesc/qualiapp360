@@ -2,12 +2,14 @@
 from tkinter import * 
 from tkinter import ttk
 from tkinter import filedialog
+from tkinter import messagebox
 import tkinter.font as tkf
 import subprocess
 from cv2 import *
 import cv2 as cv
 from numpy import * 
 import numpy as np
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 from moviepy.editor import *
 import sys
@@ -23,6 +25,7 @@ import xml.etree.ElementTree as ET
 import csv
 import math
 import time
+
 
 # specifying the zip file name
 file_name       = 'voronoiMetrics.zip'
@@ -93,6 +96,7 @@ def getMSSIMdata(I1, I2):
 
     ssim_map = cv.divide(step3, step6)    # ssim_map =  t3./t1;
     mssim = cv.mean(ssim_map)       # mssim = average of ssim map
+    print(mssim)
     return mssim
 
 # SSIM
@@ -135,7 +139,8 @@ def getWSPSNRdata(self, I1, I2, i, weightMap):
     dstImg = ReadWS(self, I2)
 
     while(total_frames < i):
-        self.progressBar['value'] = total_frames
+        self.frame_actual += 1
+        self.progressBar['value'] = self.frame_actual 
         self.root.update_idletasks()
 
         srcImg = ReadWS(self, srcImg)
@@ -144,7 +149,6 @@ def getWSPSNRdata(self, I1, I2, i, weightMap):
         start = time.time()
 
         cv.absdiff(srcImg, dstImg , diffMap)
-
         cv.pow(diffMap, 2, diffMap)
 
         weightedDiffAux = np.multiply(diffMap, weightMap)
@@ -154,7 +158,6 @@ def getWSPSNRdata(self, I1, I2, i, weightMap):
         WSPSNR = 10 * log10(255 * 255 / (WMSE + sys.float_info.epsilon))
 
         end = time.time()
-
         t = end - start
         
         print("Frame: {} WS-PSNR score: {} Time: {}".format(total_frames, WSPSNR, t, end=" "))
@@ -173,20 +176,207 @@ def ReadWS(self, frame):
     return frame
     
 def VideoCaptureYUV(self, filename, width, height):
-    self.height = height
-    self.width = width
-    self.frame_len = self.width * self.height * 3 / 2
-    # Open '*.yuv' as a binary file.
-    self.f = open(filename, 'rb')
-    self.shape = (int(self.height*1.5), self.width)
+    try:
+        self.height = height
+        self.width = width
+        self.frame_len = self.width * self.height * 3 / 2
+        # Open '*.yuv' as a binary file.
+        self.f = open(filename, 'rb')
+        self.shape = (int(self.height*1.5), self.width)
+    except:
+        messagebox.showerror(message="An error has occurred while choosing the file.", title="Error")
 
+# S-PSNR
+def getSPSNRdata(self, sph_points_x, sph_points_y, n_sphere, src, dst):
+    sum = 0
+    i = 0
+    cart = []
+    w = self.global_width
+    h = self.global_height
+
+    while(i < n_sphere):
+        
+        self.progressBar.config(maximum= self.n_sphere)
+        self.progressBar['value'] = i 
+        self.root.update_idletasks()
+
+        self.frame_actual += 1
+        self.progressBar['value'] = self.frame_actual 
+        self.root.update_idletasks()
+
+        cart = convSphToCart(self, sph_points_x[i], sph_points_y[i], cart)
+        x, y = convCartToRect(self, w, h, cart)
+
+        x -= 0.5
+        y -= 0.5
+
+        val1 = filter(self, src, x, y, w, h, w)
+        val2 = filter(self, dst, x, y, w, h, w)
+        diff = val1 - val2
+        diff = abs(diff)
+        sum += diff * diff
+
+        i += 1
+
+    sum /= n_sphere
+
+    if sum == 0:
+        sum = 100
+    else:
+        sum = 10*log10(255*255 / sum)
+
+    return sum
+
+def filter(self, src, x, y, w, h, s_src):
+    width_LB = 1
+    width_HB = w - 2
+    height_LB = 1
+    height_HB = h - 2
+
+    if((y <= height_LB) | (y >= height_HB) | (x <= width_LB) | (x >= width_HB)):
+
+        x = min(x, w-1)
+        x = max(x, 0, w-1)      
+        y = min(y, h-1)
+        y = max(y, 0, h-1)      
+
+        filter_result = linear_interp(self, src, x, y, s_src)
+
+    else:
+        filter_result = cubic_interp(self, src, x, y, s_src)
+
+    return filter_result
+
+def cubic_interp(self, src, x, y, s_src):
+
+    x_idx = []
+    y_idx = []
+    val = []
+    i = 0
+
+    x_idx[0] = (int(x - 1))
+    x_idx[1] = x_idx[0] + 1
+    x_idx[2] = x_idx[1] + 1
+    x_idx[3] = x_idx[2] + 1
+    y_idx[0] = (int(y - 1))
+    y_idx[1] = y_idx[0] + 1
+    y_idx[2] = y_idx[1] + 1
+    y_idx[3] = y_idx[2] + 1
+
+    
+    while(i < 4):
+        aZ = src + y_idx[i] * s_src + x_idx[0]
+        aZero = src + y_idx[i] * s_src + x_idx[1]
+        a1 = src + y_idx[i] * s_src + x_idx[2]
+        a2 = src + y_idx[i] * s_src + x_idx[3]
+        t = x - x_idx[1]
+        val[i] = cubicinterpolation(aZ, aZero, a1, a2, t)
+        i += 1
+    
+    filter_res = cubicinterpolation(val[0], val[1], val[3], y- y_idx[1] + 0.5)
+    return filter_res
+
+def cubicinterpolation(self, aZ, aZero, a1, a2, t):
+
+    cZ = 2 * aZero
+    cZero = -aZ + a1
+    c1 = 2 * aZ - 5 * aZero + 4 * a1 - a2
+    c2 = -aZ + 3 * aZero - 3 * a1 + a2
+
+    t2 = t * t
+    t3 = t2 * t
+
+    v = 0.5 * (cZ + cZero*t + c1*t2 + c2*t3)
+
+    x = min(v, 255)
+    x = max(x, 0, 255)      
+    y = min(v, 255)
+    y = max(y, 0, 255)   
+
+    return
+
+
+def linear_interp(self, src, x, y, s_src):
+
+    x_lo = x[0]
+    y_lo = y[0]
+    x_hi = ceil(x)
+    y_hi = ceil(y)
+
+    try:
+        a1 = x_lo + y_lo*s_src
+        a1 = src[a1[0]]
+    except:
+        a1 = 0
+
+    try:
+        b1 = x_hi + y_lo*s_src
+        b1 = src[b1[0]]
+    except:
+        b1 = 0
+        
+    k1 = x - x_lo
+
+    #interpolation
+    val1 = a1 * (1 - k1) + b1 * k1
+
+    try:
+        a2 = x_lo + y_hi*s_src
+        a2 = src[a2[0]]
+    except:
+        a2 = 0
+
+    try:
+        b2 = x_hi + y_hi*s_src
+        b2 = src[b2[0]]
+    except:
+        b2 = 0
+
+    k2 = x - x_lo
+
+    #interpolation
+    val2 = a2 * (1 - k2) + b2 * k2
+
+    k3 = y - y_lo
+
+    #interpolation
+    val = val1 * (1 - k3) + val2 * k3
+
+    return val
+
+def convCartToRect(self, w, h, cart):
+
+    x = cart[0]
+    y = cart[1]
+    z = cart[2]
+
+    phi = math.acos(y)
+    theta = math.atan2(x,z)
+
+    x_out = w * (0.5 + theta / math.pi)
+    y_out = h * (phi / math.pi)
+
+    return x_out, y_out
+
+def convSphToCart(self, sph_x, sph_y, cart):   
+
+    sph_lat = sph_x
+    sph_lon = sph_y
+    lat = (float(sph_lat) * math.pi / 180)
+    lon = (float(sph_lon) * math.pi / 180)
+
+    cart.append(sin(lon) * cos(lat))
+    cart.append(sin(lat))
+    cart.append(-cos(lon) * cos(lat))
+
+    return cart
 
 class QualiApp360:
     def __init__(self):
 
         self.root = Tk()
         self.root.title("QualiApp360")
-        self.root.geometry("1000x620")
+        self.root.geometry("1000x600")
         self.root.configure(bg="white")
         myFont = tkf.Font(family="Nyata FTR", size=14)
         myFontLittle = tkf.Font(family="Nyata FTR", size=13)
@@ -199,6 +389,20 @@ class QualiApp360:
         self.check3 = False
         self.spherical_txt = ""
 
+        #Arrays for plot
+        self.plotDataPSNR = []
+        self.plotDataSSIM = []
+        self.plotDataMSSIM = []
+        self.plotDataVMAF = []
+        self.plotDataSPSNR = []
+        self.plotDataWSPSNR = []
+
+        self.isPSNRevaluated = False
+        self.isSSIMevaluated = False
+        self.isMSSIMevaluated = False
+        self.isVMAFevaluated = False
+        self.isSPSNRevaluated = False
+        self.isWSPSNRevaluated = False
 
         #Change window icon to QualiApp360's logo
         logo = PhotoImage(file='img/LOGO48_full.png')
@@ -223,16 +427,11 @@ class QualiApp360:
         appImg.place(x=100,y=2)
         
         #Img line separator
-        lineImg= Canvas(self.root, width = 50, height= 635, bg="white", bd=0, highlightbackground='white', highlightthickness=0)
+        lineImg= Canvas(self.root, width = 50, height= 585, bg="white", bd=0, highlightbackground='white', highlightthickness=0)
         lineImg.pack()
         imgLine = PhotoImage(file = "img/line.png")
         lineImg.create_image(0, 0, anchor=NW, image=imgLine)
         lineImg.place(x=480,y=5)
-
-        #Button userManual
-        helpImg = PhotoImage(file = "img/help_45.png")
-        self.buttonManual = Button(self.root, image = helpImg, command=self.open_manual, bd=0, bg="white", cursor="hand2")
-        self.buttonManual.place(x=950,y=570)
         
         #Text area Width
         self.input_widthLabel = Label(self.root,text="Width", bg="white", font=myFontLittle)
@@ -270,6 +469,7 @@ class QualiApp360:
         #Button Open File 2       
         self.buttonOpenFile2 = Button(self.root, text="Impaired video", command=self.open_file2, width= 15, bd=0, bg="#51bfe4", cursor="hand2", font=myFont)
         self.buttonOpenFile2.place(x=250,y=280) 
+        self.buttonOpenFile2['state'] = 'disabled'
 
         #Label directory video 2
         self.checkLabel2 = Label(self.root,image = checkImg, bg="white", font=myFont)
@@ -279,6 +479,7 @@ class QualiApp360:
         #Button Open Spherical txt      
         self.buttonOpenFile3 = Button(self.root, text="Spherical txt", command=self.open_file3, width= 15, bd=0, bg="#51bfe4", cursor="hand2", font=myFont)
         self.buttonOpenFile3.place(x=250,y=325)
+        self.buttonOpenFile3['state'] = 'disabled'
 
         
         #Checkbox METRICS
@@ -286,50 +487,42 @@ class QualiApp360:
         self.chk_ssim_state = BooleanVar()
         self.chk_mssim_state = BooleanVar()
         self.chk_vmaf_state = BooleanVar()
-        self.chk_cpp_psnr_state = BooleanVar()
         self.chk_s_psnr_state = BooleanVar()
         self.chk_ws_psnr_state = BooleanVar()
-        self.chk_ov_psnr_state = BooleanVar()
         
         self.chk_psnr_state.set(False)
         self.chk_ssim_state.set(False)
         self.chk_mssim_state.set(False)
         self.chk_vmaf_state.set(False)
-        self.chk_cpp_psnr_state.set(False)
         self.chk_s_psnr_state.set(False)
         self.chk_ws_psnr_state.set(False)
-        self.chk_ov_psnr_state.set(False)
 
         self.chk_psnr = Checkbutton(self.root, text='PSNR', var=self.chk_psnr_state, bg="white", font=myFont, command=self.isAtLeastOneChecked)
         self.chk_ssim = Checkbutton(self.root, text='SSIM', var=self.chk_ssim_state, bg="white", font=myFont, command=self.isAtLeastOneChecked)
         self.chk_mssim = Checkbutton(self.root, text='MSSIM', var=self.chk_mssim_state, bg="white", font=myFont, command=self.isAtLeastOneChecked)
         self.chk_vmaf = Checkbutton(self.root, text='VMAF 360º', var=self.chk_vmaf_state, bg="white", font=myFont, command=self.isAtLeastOneChecked)
-        self.chk_cpp_psnr = Checkbutton(self.root, text='CPP-PSNR', var=self.chk_cpp_psnr_state, bg="white", font=myFont, command=self.isAtLeastOneChecked)
         self.chk_s_psnr = Checkbutton(self.root, text='S-PSNR', var=self.chk_s_psnr_state, bg="white", font=myFont, command=self.isAtLeastOneChecked)
         self.chk_ws_psnr = Checkbutton(self.root, text='WS-PSNR', var=self.chk_ws_psnr_state, bg="white", font=myFont, command=self.isAtLeastOneChecked)
-        self.chk_ov_psnr = Checkbutton(self.root, text='OV-PSNR', var=self.chk_ov_psnr_state, bg="white", font=myFont, command=self.isAtLeastOneChecked)
         
         self.chk_psnr.place(x=110,y=370)
         self.chk_ssim.place(x=110,y=400)
         self.chk_mssim.place(x=110,y=430)
-        self.chk_vmaf.place(x=110,y=460)
-        self.chk_cpp_psnr.place(x=280,y=370)
+        self.chk_vmaf.place(x=280,y=370)
         self.chk_s_psnr.place(x=280,y=400)
         self.chk_ws_psnr.place(x=280,y=430)
-        self.chk_ov_psnr.place(x=280,y=460)
 
         #All metrics disabled until both videos are loaded
         self.disableAllMetrics()
         
         #Button Start      
         self.buttonStart = Button(self.root, text="Start evaluation", command=self.start_process, width= 30, bd=0, bg="#51bfe4", cursor="hand2", font=myFont)
-        self.buttonStart.place(x=100,y=510)
+        self.buttonStart.place(x=100,y=475)
         self.buttonStart['state'] = 'disabled'
 
         #Progress bar
         self.style.configure("blue.Horizontal.TProgressbar", background='#2189d1')
         self.progressBar = ttk.Progressbar(self.root, orient='horizontal', mode='determinate', style='blue.Horizontal.TProgressbar')
-        self.progressBar.place(x=100, y=565, width=305)      
+        self.progressBar.place(x=100, y=530, width=305)      
 
         #Label completed
         self.completedLabel = Label(self.root,text = "Evaluation completed!", bg="white", fg="#2189d1") 
@@ -370,17 +563,57 @@ class QualiApp360:
         self.chk_sigma['state'] = 'disabled'
         self.chk_min['state'] = 'disabled'
         self.chk_max['state'] = 'disabled'
+        '''
+        #ComboBox Metrics
+        self.comboMetrics = ttk.Combobox(self.root, state = "readonly")
+        self.comboMetrics.place(x=700, y=150)
+        self.comboMetrics["values"] = ["PSNR","SSIM","MSSIM","S-PSNR","WS-PSNR"]
+        '''
+        #Show Plot Buttons
+        #Label choose metrics
+        self.metricsLabel = Label(self.root,text="Plot output", width=35, bg="white", fg="#2189d1") 
+        self.metricsLabel.config(font=("Nyata FTR", 17))
+        self.metricsLabel.place(x=535,y=165)
         
+        self.buttonShowPlotPSNR = Button(self.root, text="Show PSNR plot", command=self.showPSNR, width= 15, bd=0, bg="#51bfe4", cursor="hand2", font=myFont)
+        self.buttonShowPlotPSNR.place(x=590,y=210)
+        self.buttonShowPlotPSNR['state'] = 'disabled'
+
+        self.buttonShowPlotSSIM = Button(self.root, text="Show SSIM plot", command=self.showSSIM, width= 15, bd=0, bg="#51bfe4", cursor="hand2", font=myFont)
+        self.buttonShowPlotSSIM.place(x=590,y=270)
+        self.buttonShowPlotSSIM['state'] = 'disabled'
+
+        self.buttonShowPlotMSSIM = Button(self.root, text="Show MSSIM plot", command=self.showMSSIM, width= 15, bd=0, bg="#51bfe4", cursor="hand2", font=myFont)
+        self.buttonShowPlotMSSIM.place(x=590,y=330)
+        self.buttonShowPlotMSSIM['state'] = 'disabled'
+
+        self.buttonShowPlotVMAF = Button(self.root, text="Show VMAF plot", command=self.showVMAF, width= 15, bd=0, bg="#51bfe4", cursor="hand2", font=myFont)
+        self.buttonShowPlotVMAF.place(x=760,y=210)
+        self.buttonShowPlotVMAF['state'] = 'disabled'
+
+        self.buttonShowPlotSPSNR = Button(self.root, text="Show S-PSNR plot", command=self.showSPSNR, width= 15, bd=0, bg="#51bfe4", cursor="hand2", font=myFont)
+        self.buttonShowPlotSPSNR.place(x=760,y=270)
+        self.buttonShowPlotSPSNR['state'] = 'disabled'
+        
+        self.buttonShowPlotWSPSNR = Button(self.root, text="Show WS-PSNR plot", command=self.showWSPSNR, width= 15, bd=0, bg="#51bfe4", cursor="hand2", font=myFont)
+        self.buttonShowPlotWSPSNR.place(x=760,y=330)
+        self.buttonShowPlotWSPSNR['state'] = 'disabled'
+
+
+        #Label save metrics
+        self.metricsLabel = Label(self.root,text="Save the results", width=35, bg="white", fg="#2189d1") 
+        self.metricsLabel.config(font=("Nyata FTR", 17))
+        self.metricsLabel.place(x=535,y=400)
+
         #Button CSV      
         self.buttonSaveCSV = Button(self.root, text="Download CSV", command=self.save_csv, width= 30, bd=0, bg="#51bfe4", cursor="hand2", font=myFont)
-        self.buttonSaveCSV.place(x=600,y=430)
+        self.buttonSaveCSV.place(x=600,y=445)
         self.buttonSaveCSV['state'] = 'disabled'
-        
-        '''
-        #Button JSON      
-        self.buttonSaveJSON = Button(self.root, text="Download JSON", command=self.save_json, width= 30, bd=0, bg="#51bfe4", cursor="hand2", font=myFont)
-        self.buttonSaveJSON.place(x=600,y=480)
-        self.buttonSaveJSON['state'] = 'disabled'''
+
+        #Button userManual
+        helpImg = PhotoImage(file = "img/help_45.png")
+        self.buttonManual = Button(self.root, image = helpImg, command=self.open_manual, bd=0, bg="white", cursor="hand2")
+        self.buttonManual.place(x=950,y=550)
         
         self.root.mainloop()
 
@@ -394,7 +627,22 @@ class QualiApp360:
         self.progressBar.start        
         self.frame_actual = 0
         
+        self.buttonOpenFile2['state'] = 'disabled'        
         self.buttonStart['state'] = 'disabled'
+
+        if(self.isPSNRchecked == True):
+            self.isPSNRevaluated = True
+        if(self.isSSIMchecked == True):
+            self.isSSIMevaluated = True
+        if(self.isMSSIMchecked == True):
+            self.isMSSIMevaluated = True
+        if(self.isVMAFchecked == True):
+            self.isVMAFevaluated = True
+        if(self.isSPSNRchecked == True):
+            self.isSPSNRevaluated = True
+        if(self.isWSPSNRchecked == True):
+            self.isWSPSNRevaluated = True
+
         self.disableAllMetrics()
 
 
@@ -412,23 +660,21 @@ class QualiApp360:
         if(self.dir1.endswith('.mp4') | self.dir1.endswith('.avi')):                    
             self.global_width = self.size_from_video[0]
             self.global_height = self.size_from_video[1]
-            num_frames = self.num_frames_from_video
 
-     
-        #get the frames from the input textbox
-        num_frames = int(self.input_frames.get("1.0", "end"))
+        
+        self.num_frames = self.num_frames_from_video 
         
         #START PROCESS
-        print("Size: Width={} Height={} | Number of Frames#: {}".format(self.global_width, self.global_height, num_frames))
+        print("Size: Width={} Height={} | Number of Frames#: {}".format(self.global_width, self.global_height, self.num_frames))
 
         #config progressBar
-        self.progressBar.config(maximum= num_frames)
+        self.progressBar.config(maximum= self.num_frames)
         
         #VMAF
         if(self.isVMAFchecked() == True):
             
             self.frame_actual = 0
-            getVMAFdata(self, num_frames)
+            getVMAFdata(self)
 
         if(self.isWSPSNRchecked() == True):
             self.frame_actual = 0
@@ -441,114 +687,291 @@ class QualiApp360:
                 weightMap[j] = weightMap[j] * weight
                 j+=1
 
-            totalWS, durationWS = getWSPSNRdata(self, captRefrnc, captUndTst, num_frames, weightMap)
+            totalWS, durationWS = getWSPSNRdata(self, captRefrnc, captUndTst, self.num_frames, weightMap)
 
             #WS-PSNR data print
-            global_ws_psnr = totalWS / num_frames
-            avg_time_ws_psnr = durationWS / num_frames
+            global_ws_psnr = totalWS / self.num_frames
+            avg_time_ws_psnr = durationWS / self.num_frames
             
             print("Global WS-PSNR: {}".format(round(global_ws_psnr, 4)), end=" ")
             print()
             print("Average Time: {}".format(round(avg_time_ws_psnr, 4)), end=" ")
-        
-        else: 
+
+        if(self.isSPSNRchecked() == True):
             self.frame_actual = 0
-            #PSNR, SSIM, MSSIM, WS-PSNR
-            while (self.frame_actual < num_frames):           
-                
-                self.frame_actual += 1
-                self.progressBar['value'] = self.frame_actual 
-                self.root.update_idletasks()
-                
-                framenum += 1
+            j = 0      
 
-                _, frameReference = captRefrnc.read()
-                _, frameUnderTest = captUndTst.read()
+            sum_SPSNR = getSPSNRdata(self, self.sph_points_x, self.sph_points_y, self.n_sphere, captRefrnc, captUndTst)
 
-                if frameReference is None or frameUnderTest is None:
-                    break
+            #S-PSNR data print            
+            print("S-PSNR: {}".format(round(sum_SPSNR, 4)), end=" ")
+            print()
+        
+        #2D Metrics: PSNR, SSIM, MSSIM
+        #if(self.isPSNRchecked() == True | self.isMSSIMchecked() == True | self.isSSIMchecked() == True):
+        self.frame_actual = 0
+        while (self.frame_actual < self.num_frames or (msvcrt.kbhit() and msvcrt.getch()[0] == 27)):           
             
-                if(self.isPSNRchecked() == True):
-                    psnrv = getPSNRdata(frameReference, frameUnderTest)
-                    print("Frame: {}# PSNR: {}dB".format(framenum, round(psnrv, 3)), end=" ")
-                    print()
-
-                if(self.isMSSIMchecked() == True):
-                    mssimv = getMSSIMdata(frameReference, frameUnderTest)
-                    print("MSSIM: R {}% G {}% B {}%".format(round(mssimv[2] * 100, 2), round(mssimv[1] * 100, 2), round(mssimv[0] * 100, 2), end=" "))
-                    print()
-
-                if(self.isSSIMchecked() == True):
-                    ssim = getSSIMdata(frameReference, frameUnderTest)
-                    print("SSIM: {}".format(ssim, end=" "))
-                    print()
-
-
-                if cv.waitKey(1) & 0xFF == 27:
-                    break
+            self.frame_actual += 1
+            self.progressBar['value'] = self.frame_actual 
+            self.root.update_idletasks()
             
+            framenum += 1
 
-        self.completedLabel.place(x=175,y=585)  
+            _, frameReference = captRefrnc.read()
+            _, frameUnderTest = captUndTst.read()
 
-        self.enable_chk_graph()      
+            if frameReference is None or frameUnderTest is None:
+                break
+        
+            if(self.isPSNRchecked() == True):
+                psnrv = getPSNRdata(frameReference, frameUnderTest)
+                print("Frame: {}# PSNR: {}dB".format(framenum, round(psnrv, 3)), end=" ")
+                self.plotDataPSNR.append(psnrv)
+                print()
+
+            if(self.isMSSIMchecked() == True):
+                mssimv = getMSSIMdata(frameReference, frameUnderTest)
+                print("MSSIM: R {}% G {}% B {}%".format(round(mssimv[2] * 100, 2), round(mssimv[1] * 100, 2), round(mssimv[0] * 100, 2), end=" "))
+                print()
+                self.plotDataMSSIM.append(mssimv)
+
+            if(self.isSSIMchecked() == True):
+                ssim = getSSIMdata(frameReference, frameUnderTest)
+                print("SSIM: {}".format(ssim, end=" "))
+                print()
+                self.plotDataSSIM.append(ssim)
+                
+
+
+            if cv.waitKey(1) & 0xFF == 27:
+                break
+        
+
+        self.completedLabel.place(x=175,y=565)  
+
+        self.enable_chk_graph()
+
+        if(self.isPSNRchecked()):
+            self.createPlotPSNR()
+        if(self.isMSSIMchecked()):
+            self.createPlotMSSIM()
+        if(self.isSSIMchecked()):
+            self.createPlotSSIM()
+        if(self.isVMAFchecked()):
+            self.createPlotVMAF()
+        if(self.isSPSNRchecked()):
+            self.createPlotSPSNR()
+        if(self.isWSPSNRchecked()):
+            self.createPlotWSPSNR()
  
+    #Function create plots
+    def createPlotPSNR(self):
+       
+        x = []
+        y = []
+        
+        n_frames = int(self.num_frames_from_video)
+        x = list(range(n_frames))
+        y = self.plotDataPSNR
+
+        plt.plot(x, y, linewidth=2.0)
+        plt.axis([0,n_frames, 0, 100])
+        plt.xlabel('Number of frames')
+        plt.ylabel('PSNR')
+        plt.title('PSNR results')
+
+      #Function create plots
+    def createPlotSSIM(self):
+       
+        x = []
+        y = []
+        
+        n_frames = int(self.num_frames_from_video)
+        x = list(range(n_frames))
+        y = self.plotDataSSIM
+        
+        plt.plot(x, y, linewidth=2.0)
+        plt.axis([0,n_frames, 0, 2])
+        plt.xlabel('Number of frames')
+        plt.ylabel('SSIM')
+        plt.title('SSIM results')
+
+
+      #Function create plots
+    def createPlotMSSIM(self):
+       
+        x = []
+        y = []
+        
+        n_frames = int(self.num_frames_from_video)
+        x = list(range(n_frames))
+        y = self.plotDataMSSIM
+        
+        plt.plot(x, y, linewidth=2.0)
+        plt.axis([0,n_frames, 0, 2])
+        plt.xlabel('Number of frames')
+        plt.ylabel('MSSIM')
+        plt.title('MSSIM results')
+
+        red = mpatches.Patch(color='orange', label='R')
+        green = mpatches.Patch(color='green', label='G')
+        blue = mpatches.Patch(color='blue', label='B')
+
+        plt.legend(handles=[red, green, blue])
+
+
+  #Function create plots
+    def createPlotVMAF(self):
+       
+        x = []
+        y = []
+        
+        n_frames = int(self.num_frames_from_video)
+        x = list(range(n_frames))
+        y = self.plotDataVMAF
+        
+        plt.plot(x, y, linewidth=2.0)
+        plt.axis([0,n_frames, 0, 100])
+        plt.xlabel('Number of frames')
+        plt.ylabel('VMAF')
+        plt.title('VMAF results')
+
+
+
+  #Function create plots
+    def createPlotSPSNR(self):
+       
+        x = []
+        y = []
+        
+        n_frames = int(self.num_frames_from_video)
+        x = list(range(n_frames))
+        y = self.plotDataSPSNR
+        
+        plt.plot(x, y, linewidth=2.0)
+        plt.axis([0,n_frames, 0, 100])
+        plt.xlabel('Number of frames')
+        plt.ylabel('SPSNR')
+        plt.title('SPSNR results')
+
+  #Function create plots
+    def createPlotWSPSNR(self):
+       
+        x = []
+        y = []
+        
+        n_frames = int(self.num_frames_from_video)
+        x = list(range(n_frames))
+        y = self.plotDataSPSNR
+        
+        plt.plot(x, y, linewidth=2.0)
+        plt.axis([0,n_frames, 0, 100])
+        plt.xlabel('Number of frames')
+        plt.ylabel('WSPSNR')
+        plt.title('WSPSNR results')
+
+
 
     #Function open file 1
     def open_file1(self):
-        self.dir1 = filedialog.askopenfilename(initialdir="/",title="Select Video",
-            filetypes=(("all files", "*.*"),("avi files","*.avi"),("mp4 files","*.mp4"),("yuv files","*.yuv")))
-        
-        self.global_width = int(self.input_width.get("1.0", "end"))
-        self.global_height = int(self.input_height.get("1.0", "end"))
 
-        if(self.dir1.endswith('.yuv')):
-            self.first_video = VideoCaptureYUV(self, self.dir1, self.global_width, self.global_height)
-        else:
-            self.first_video = cv.VideoCapture(self.dir1)
-            size_from_video = (int(self.first_video.get(CAP_PROP_FRAME_WIDTH)), int(self.first_video.get(CAP_PROP_FRAME_HEIGHT)))
-            num_frames_from_video = self.first_video.get(CAP_PROP_FRAME_COUNT)
+        self.disableAllMetrics() 
 
-        
-        self.check1 = True
-        self.checkLabel1.place(x=415,y=230) 
+        if(messagebox.askokcancel("Warning","To evaluate spherical videos you need to add the required data before choosing a file. Do you want to continue?")):
+            self.dir1 = filedialog.askopenfilename(initialdir="/",title="Select Video",
+                filetypes=(("all files", "*.*"),("avi files","*.avi"),("mp4 files","*.mp4"),("yuv files","*.yuv")))
 
-        if(self.check1 == True & self.check2 == True):
-            self.check1 = False
-            self.check2 = False
-            self.buttonStart['state'] = 'normal'
-            self.enableAllMetrics()
+            if(self.dir1.endswith('.yuv') | self.dir1.endswith('.avi') | self.dir1.endswith('.mp4')):
+                self.size_from_video = 0
 
+                if(self.dir1.endswith('.yuv')):
+                    try:
+                        self.global_width = int(self.input_width.get("1.0", "end"))
+                        self.global_height = int(self.input_height.get("1.0", "end"))
+                        self.num_frames_from_video  = int(self.input_frames.get("1.0", "end"))
+                        self.num_frames = self.num_frames_from_video 
+                        self.first_video = VideoCaptureYUV(self, self.dir1, self.global_width, self.global_height)
+                        self.check1 = True
+                        self.buttonOpenFile2['state'] = 'normal'
+                        self.buttonOpenFile3['state'] = 'normal'
+                    except:
+                        messagebox.showerror(message="Error loading video file. Please input the required data before loading a video", title="Error")
+                else:
+                    try:
+                        self.first_video = cv.VideoCapture(self.dir1)
+                        self.global_width = self.first_video.get(CAP_PROP_FRAME_WIDTH)
+                        self.global_height = self.first_video.get(CAP_PROP_FRAME_HEIGHT)
+                        self.size_from_video = (self.global_width, self.global_height)
+                        self.num_frames_from_video = self.first_video.get(CAP_PROP_FRAME_COUNT)
+                        self.check1 = True
+                        self.buttonOpenFile2['state'] = 'normal'
+                    except:
+                        messagebox.showerror(message="Error loading video file.", title="Error")
 
+            if(self.check1 == True & self.check2 == True):
+                self.check1 = False
+                self.check2 = False
+                self.buttonStart['state'] = 'normal'
+                
     #Function open file 2
     def open_file2(self):
+        
+        self.disableAllMetrics()   
+
         self.dir2 = filedialog.askopenfilename(initialdir="/",title="Select Video",
             filetypes=(("all files", "*.*"),("avi files","*.avi"),("mp4 files","*.mp4"),("yuv files","*.yuv")))
         
-        if(self.dir2.endswith('.yuv')):
-            self.second_video = VideoCaptureYUV(self, self.dir2, self.global_width, self.global_height)
+        if(self.dir2.endswith('.yuv') | self.dir2.endswith('.avi') | self.dir2.endswith('.mp4')):
+
+            if(self.dir2.endswith('.yuv')):
+                try:
+                    self.second_video = VideoCaptureYUV(self, self.dir2, self.global_width, self.global_height)
+                    self.check2 = True
+                    self.enableAllMetrics()        
+                except:
+                    messagebox.showerror(message="Error loading video file.", title="Error")
+            else:
+                try:
+                    self.second_video = cv.VideoCapture(self.dir2)
+                    self.check2 = True
+                    self.enableAllMetrics()                
+                except:
+                    messagebox.showerror(message="Error loading video file.", title="Error")
+
+                #Checks if both videos are loaded
+                if(self.check1 == True & self.check2 == True):
+                    self.check1 = False
+                    self.check2 = False
+                    self.enableAllMetrics()
         else:
-            self.second_video = cv.VideoCapture(self.dir2)
-
-        
-        self.check2 = True
-        self.checkLabel2.place(x=415,y=275) 
-
-        self.enableAllMetrics()
-
-        #Checks if both videos are loaded
-        if(self.check1 == True & self.check2 == True):
-            self.check1 = False
-            self.check2 = False
-            self.enableAllMetrics()
+            messagebox.showerror(message="An error has occurred while choosing the video file.", title="Error")
 
      #Function open txt file
     def open_file3(self): 
-        self.dir3 = filedialog.askopenfilename(initialdir="/",title="Select txt file",
-            filetypes=(("txt files", "*.txt")))       
         
+        self.dir3 = filedialog.askopenfilename(initialdir="/",title="Select File",
+            filetypes=[("txt files", "*.txt")])
         
-        self.enableAllMetrics()
-        self.checkLabel3.place(x=415,y=320) 
+        if(self.dir3.endswith('.txt')):
+            self.n_sphere = 0
+
+            with open(self.dir3, 'r') as data:
+                self.sph_points_x = []
+                self.sph_points_y = []
+                for line in data:
+                    p = line.split()
+                    self.sph_points_x.append(p[0])
+                    self.sph_points_y.append(p[1])
+                    self.n_sphere += 1
+            
+            #self.sph_points = np.c_[sph_x, sph_y]
+            #self.sph_points = [sph_x, sph_y]
+            self.check3 = True
+            self.enableAllMetrics()
+        else:
+            messagebox.showerror(message="Choose a txt file", title="Error")
+        
 
 
     def enableAllMetrics(self):
@@ -560,23 +983,19 @@ class QualiApp360:
 
         if(self.dir1.endswith('.yuv')):
             self.chk_vmaf['state'] = 'normal'
-            self.chk_cpp_psnr['state'] = 'normal'
             self.chk_ws_psnr['state'] = 'normal'
             
             if(self.check3 == True):
                 self.chk_s_psnr['state'] = 'normal'
-            self.chk_ov_psnr['state'] = 'normal'
 
 
     def disableAllMetrics(self):
-        self.chk_psnr['state'] = 'disable'
-        self.chk_ssim['state'] = 'disable'
-        self.chk_mssim['state'] = 'disable'
-        self.chk_vmaf['state'] = 'disable'
-        self.chk_cpp_psnr['state'] = 'disable'
-        self.chk_s_psnr['state'] = 'disable'
-        self.chk_ws_psnr['state'] = 'disable'
-        self.chk_ov_psnr['state'] = 'disable'
+        self.chk_psnr['state'] = 'disabled'
+        self.chk_ssim['state'] = 'disabled'
+        self.chk_mssim['state'] = 'disabled'
+        self.chk_vmaf['state'] = 'disabled'
+        self.chk_s_psnr['state'] = 'disabled'
+        self.chk_ws_psnr['state'] = 'disabled'
 
 
     #Function activate checkboxes and buttons from the graph side
@@ -585,37 +1004,88 @@ class QualiApp360:
         self.chk_sigma['state'] = 'normal'
         self.chk_min['state'] = 'normal'
         self.chk_max['state'] = 'normal'
+        
+        if self.isPSNRchecked():                
+            self.buttonShowPlotPSNR['state'] = 'normal'
+        if self.isSSIMchecked():    
+            self.buttonShowPlotSSIM['state'] = 'normal'
+        if self.isMSSIMchecked():    
+            self.buttonShowPlotMSSIM['state'] = 'normal'
+        if self.isVMAFchecked():    
+            self.buttonShowPlotVMAF['state'] = 'normal'
+        if self.isSPSNRchecked():    
+            self.buttonShowPlotSPSNR['state'] = 'normal'
+        if self.isWSPSNRchecked():    
+            self.buttonShowPlotWSPSNR['state'] = 'normal'
 
+        self.buttonSaveCSV['state'] = 'normal'
+
+    def showPSNR(self):
+        plt.show()
+
+    def showSSIM(self):
+        plt.show()
+    
+    def showMSSIM(self):
+        plt.show()
+
+    def showVMAF(self):
+        plt.show()
+    
+    def showSPSNR(self):
+        plt.show()
+    
+    def showWSPSNR(self):
+        plt.show()
+    
     #Function save data on a CSV file
     def save_csv(self):
-        print("csv")
+        messagebox.showinfo(message="Selected metrics will be downloaded. Existing files will be overwritten.", title="")
 
-        '''
-        for cellObj in sheet['A1':'C3']:
-            for cell in cellObj:
-                    print(cell.coordinate, cell.value)
-            print('--- END ---')
-        
-        OUTPUT:
-            A1 ID
-            B1 AGE
-            C1 SCORE
-            --- END ---
-            A2 1
-            B2 22
-            C2 5
-            --- END ---
-            A3 2
-            B3 15
-            C3 6
-            --- END ---
-        '''
+        if self.isPSNRchecked(): 
+            i = 1
+            n_frames = int(self.num_frames_from_video)
+            
+            with open('psnr_metrics.csv', 'w', newline='') as file:
+                writer = csv.writer(file)
+                while(i < n_frames):
+                    rowlist = [self.plotDataPSNR[i]]
+                    writer.writerow(rowlist)
+                    i += 1
 
-    #Function save data on a JSON file
-    def save_json(self):
-        print("json")
+        if self.isSSIMchecked(): 
+            i = 1
+            n_frames = int(self.num_frames_from_video)
+            
+            with open('ssim_metrics.csv', 'w', newline='') as file:
+                writer = csv.writer(file)
+                while(i < n_frames):
+                    rowlist = [self.plotDataSSIM[i]]
+                    writer.writerow([rowlist])
+                    i += 1
 
+        if self.isMSSIMchecked(): 
+            i = 1
+            n_frames = int(self.num_frames_from_video)
+            
+            with open('mssim_metrics.csv', 'w', newline='') as file:
+                writer = csv.writer(file)
+                while(i < n_frames):
+                    rowlist = [self.plotDataMSSIM[i]]
+                    writer.writerow(rowlist)
+                    i += 1
 
+        if self.isSPSNRchecked(): 
+            i = 1
+            n_frames = int(self.num_frames_from_video)
+            
+            with open('spsnr_metrics.csv', 'w', newline='') as file:
+                writer = csv.writer(file)
+                while(i < n_frames):
+                    rowlist = [self.plotDataSPSNR[i]]
+                    writer.writerow(rowlist)
+                    i += 1
+                    
     def isPSNRchecked(self):
         if(self.chk_psnr_state.get()):
             return True
@@ -640,12 +1110,6 @@ class QualiApp360:
         else: 
             return False
 
-    def isCPPPSNRchecked(self):
-        if(self.chk_cpp_psnr_state.get()):
-            return True
-        else: 
-            return False
-
     def isSPSNRchecked(self):
         if(self.chk_s_psnr_state.get()):
             return True
@@ -658,36 +1122,22 @@ class QualiApp360:
         else: 
             return False
 
-    def isOVPSNRchecked(self):
-        if(self.chk_ov_psnr_state.get()):
-            return True
-        else: 
-            return False
 
     def isAtLeastOneChecked(self):
-        if(self.isOVPSNRchecked() | self.isWSPSNRchecked() | self.isSPSNRchecked() | self.isCPPPSNRchecked() 
-        | self.isVMAFchecked() | self.isSSIMchecked() |  self.isMSSIMchecked() |  self.isPSNRchecked()): 
+        if(self.isWSPSNRchecked() | self.isSPSNRchecked()| self.isVMAFchecked() | self.isSSIMchecked() |  self.isMSSIMchecked() |  self.isPSNRchecked()): 
             self.buttonStart['state'] = 'normal'
         else:
             self.buttonStart['state'] = 'disabled'
 
 
-def getVMAFdata(self, num_frames):
+def getVMAFdata(self):
     parser = argparse.ArgumentParser()
-
     
     parser = argparse.ArgumentParser(description='VMAF ODV')
-    '''
-    parser.add_argument('--w', required=True, action="store", help="resolution width of a given videos")
-    parser.add_argument('--h', required=True, action="store", help="resolution height of a given videos")
-    parser.add_argument('--f', required=True, action="store", help="number of frame")
-    parser.add_argument('--r', required=True, action="store", help="reference video")
-    parser.add_argument('--c', nargs='?', type=int, default=15, action="store", help="cell number")
-    '''
     
     parser.add_argument('--w', default=self.global_width, help="resolution width of a given videos")
     parser.add_argument('--h', default=self.global_height, help="resolution height of a given videos")
-    parser.add_argument('--f', default=num_frames, help="number of frame")
+    parser.add_argument('--f', default=self.num_frames, help="number of frame")
     parser.add_argument('--r', default=self.dir1,  help="reference video")
     parser.add_argument('--c', nargs='?', type=int, default=15, action="store", help="cell number")
 
@@ -870,7 +1320,13 @@ def report_vmafScores(self, video):
         __vmaf = [float(_vmaf[l]) for l in range(len(_vmaf))]
        
         avg_vmaf = sum(__vmaf)/len(__vmaf)
-       
+
+        
+        self.frame_actual += 1
+        self.progressBar['value'] = self.frame_actual 
+        self.root.update_idletasks()
+        
+        self.plotDataVMAF.append(avg_vmaf)       
         print("::.. VMAF score for {} = {}".format(os.path.basename(video)[:-4], round(avg_vmaf,4)))
         w.writerow(['VMAF: '+ str(round(avg_vmaf,4))])
         [w.writerow([score_per_frame]) for score_per_frame in _vmaf]
